@@ -1,9 +1,9 @@
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near_bindgen, AccountId, PromiseOrValue, PanicOnDefault, NearToken, near};
-use near_sdk::collections::UnorderedMap;
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
+use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::collections::UnorderedMap;
 use near_sdk::json_types::U128;
+use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::{env, near, near_bindgen, AccountId, NearToken, PanicOnDefault, PromiseOrValue};
 
 // Constants
 const APY: u128 = 250; // Annual Percentage Yield (2.5%)
@@ -21,8 +21,8 @@ pub struct StakeInfo {
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct StakingContract {
-    owner_id: AccountId,                                // Contract owner
-    token_contract: AccountId,                         // NEP-141 token contract address
+    owner_id: AccountId,                                 // Contract owner
+    token_contract: AccountId,                           // NEP-141 token contract address
     staked_balances: UnorderedMap<AccountId, StakeInfo>, // User staking information
 }
 
@@ -69,8 +69,8 @@ impl StakingContract {
                 "receiver_id": account_id,
                 "amount": total_payout.to_string(),
             })
-                .to_string()
-                .into_bytes(),
+            .to_string()
+            .into_bytes(),
             NearToken::from_yoctonear(1), // Attach 1 yoctoNEAR
             env::prepaid_gas().saturating_div(2),
         );
@@ -150,19 +150,23 @@ impl FungibleTokenReceiver for StakingContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use near_sdk::{AccountId, testing_env, test_utils::VMContextBuilder, MockedBlockchain};
-    use near_sdk::test_utils::accounts;
     use near_sdk::json_types::U128;
+    use near_sdk::test_utils::accounts;
+    use near_sdk::{test_utils::VMContextBuilder, testing_env, AccountId, MockedBlockchain};
 
     const TOKEN_CONTRACT: &str = "token.testnet";
 
     /// Helper function to create a mock context
-    fn get_context(predecessor: AccountId, attached_deposit: u128, block_timestamp: u64) -> VMContextBuilder {
+    fn get_context(
+        predecessor: AccountId,
+        attached_deposit: u128,
+        block_timestamp: u64,
+    ) -> VMContextBuilder {
         let mut builder = VMContextBuilder::new();
         builder
             .predecessor_account_id(predecessor) // The account that sends the call (e.g., the token contract)
             .attached_deposit(NearToken::from_yoctonear(attached_deposit)) // The deposit attached with the call
-            .block_timestamp(block_timestamp);  // Set the block timestamp
+            .block_timestamp(block_timestamp); // Set the block timestamp
         builder
     }
 
@@ -221,7 +225,10 @@ mod tests {
 
         // Check if the user's staking record is updated
         let stake_info = contract.get_stake_info(sender_id).unwrap();
-        assert_eq!(stake_info.amount, first_stake_amount.0 + second_stake_amount.0);
+        assert_eq!(
+            stake_info.amount,
+            first_stake_amount.0 + second_stake_amount.0
+        );
         assert_eq!(stake_info.accumulated_reward, 0);
     }
 
