@@ -6,7 +6,7 @@ use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, near, near_bindgen, AccountId, NearToken, PanicOnDefault, PromiseOrValue};
 
 // Constants
-const APY: u128 = 250; // Annual Percentage Yield (2.5%)
+const APY: u128 = 800;// Annual Percentage Yield (8%)
 const SECONDS_IN_A_YEAR: u128 = 365 * 24 * 60 * 60; // Number of seconds in a year
 
 /// Struct for storing staking information
