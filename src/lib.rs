@@ -8,6 +8,7 @@ use near_sdk::{
 // Constants
 const APY: u128 = 800; // Annual Percentage Yield (8%)
 const SECONDS_IN_A_YEAR: u128 = 365 * 24 * 60 * 60; // Number of seconds in a year
+const ONE_MONTH: u128 = 30 * 60 * 60; // Number of seconds in a month
 const NANOSECONDS: u64 = 1_000_000_000; // Nanoseconds to seconds
 const APY_BASE: u128 = 10000;
 
@@ -196,13 +197,81 @@ impl StakingContract {
     }
 
     /// Query total stake
-    fn get_total_stake(&self) -> u128 {
+    pub fn get_total_stake(&self) -> u128 {
         self.total_staked
     }
 
     /// Query total claimed reward
-    fn get_total_claimed_reward(&self) -> u128 {
+    pub fn get_total_claimed_reward(&self) -> u128 {
         self.total_claimed_reward
+    }
+
+    /// Only owner can call. Transfer `amount` of given token to `to`.
+    #[payable]
+    pub fn withdraw_token(&mut self, amount: U128) -> Promise {
+        assert_one_yocto();
+        // Ensure only owner can call
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.owner_id,
+            "Only the owner can withdraw tokens"
+        );
+
+        Promise::new(self.token_contract.clone())
+            .function_call(
+                "ft_balance_of".to_string(),
+                serde_json::json!({
+                    "account_id": env::current_account_id()
+                })
+                .to_string()
+                .into_bytes(),
+                NearToken::from_near(0),
+                Gas::from_gas(10_000_000_000_000),
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_gas(30_000_000_000_000))
+                    .on_check_balance_then_withdraw(
+                        self.token_contract.clone(),
+                        self.owner_id.clone(),
+                        amount,
+                    ),
+            )
+    }
+
+    #[private]
+    pub fn on_check_balance_then_withdraw(
+        &self,
+        token_contract: AccountId,
+        to: AccountId,
+        amount: U128,
+        #[callback_result] call_result: Result<Option<U128>, near_sdk::PromiseError>,
+    ) -> Promise {
+        let balance = match call_result {
+            Ok(Some(b)) => b.0,
+            _ => env::panic_str("Failed to get token balance"),
+        };
+        let mut available = 0;
+        let frozen = self.total_staked + self.calculate_reward(self.total_staked, ONE_MONTH as u64); // Assume that it is impossible to transfer all staking users’ income for one month
+        if balance > frozen {
+            available = balance - frozen;
+        }
+        assert!(
+            amount.0 <= available,
+            "Not enough token balance to withdraw"
+        );
+
+        Promise::new(token_contract).function_call(
+            "ft_transfer".to_string(),
+            serde_json::json!({
+                "receiver_id": to,
+                "amount": amount,
+            })
+            .to_string()
+            .into_bytes(),
+            NearToken::from_yoctonear(1),
+            Gas::from_gas(10_000_000_000_000),
+        )
     }
 }
 
@@ -391,11 +460,19 @@ mod tests {
         // Unstake all tokens
         contract.unstake();
         let stake = stake_info.unwrap();
-        contract.on_ft_transfer_then_remove(accounts(1), stake.amount, stake.accumulated_reward, Ok(()));
+        contract.on_ft_transfer_then_remove(
+            accounts(1),
+            stake.amount,
+            stake.accumulated_reward,
+            Ok(()),
+        );
         // Check that the user's staking record is removed
         stake_info = contract.get_stake_info(sender_id);
         assert!(stake_info.is_none());
         assert_eq!(contract.get_total_stake(), 0);
-        assert_eq!(contract.get_total_claimed_reward(), stake.accumulated_reward);
+        assert_eq!(
+            contract.get_total_claimed_reward(),
+            stake.accumulated_reward
+        );
     }
 }
