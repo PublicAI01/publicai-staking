@@ -1,13 +1,15 @@
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
 use near_sdk::json_types::U128;
-use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near, near_bindgen, AccountId, NearToken, PanicOnDefault, PromiseOrValue};
+use near_sdk::{
+    assert_one_yocto, env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
+};
 
 // Constants
-const APY: u128 = 800;// Annual Percentage Yield (8%)
+const APY: u128 = 800; // Annual Percentage Yield (8%)
 const SECONDS_IN_A_YEAR: u128 = 365 * 24 * 60 * 60; // Number of seconds in a year
+const NANOSECONDS: u64 = 1_000_000_000; // Nanoseconds to seconds
+const APY_BASE: u128 = 10000;
 
 /// Struct for storing staking information
 #[near(serializers = [json, borsh])]
@@ -24,6 +26,10 @@ pub struct StakingContract {
     owner_id: AccountId,                                 // Contract owner
     token_contract: AccountId,                           // NEP-141 token contract address
     staked_balances: UnorderedMap<AccountId, StakeInfo>, // User staking information
+    stake_paused: bool,                                  // Pause stake
+    stake_end_time: u64, // Stake end time,after this time, there will be no rewards for stake,0 means no end time.
+    total_staked: u128,  // Total amount staked
+    total_claimed_reward: u128, // Total amount of claimed reward
 }
 
 #[near]
@@ -36,12 +42,54 @@ impl StakingContract {
             owner_id,
             token_contract,
             staked_balances: UnorderedMap::new(b"s".to_vec()),
+            stake_paused: false,
+            stake_end_time: 0,
+            total_staked: 0,
+            total_claimed_reward: 0,
         }
+    }
+
+    /// Pause or start stake (only callable by the owner).
+    /// - `pause`: If true, staking is paused, if false, staking is started.
+    #[payable]
+    pub fn pause_stake(&mut self, pause: bool) {
+        assert_one_yocto();
+        assert_eq!(
+            self.owner_id,
+            env::predecessor_account_id(),
+            "Only the owner can pause or start stake."
+        );
+        self.stake_paused = pause;
+        env::log_str(&format!("Stake paused updated to {}", self.stake_paused));
+    }
+
+    /// Set stake end time (only callable by the owner).
+    /// - `end_time`: End time timestamp.
+    #[payable]
+    pub fn set_stake_end_time(&mut self, end_time: u64) {
+        assert_one_yocto();
+        assert_eq!(
+            self.owner_id,
+            env::predecessor_account_id(),
+            "Only the owner can set end time."
+        );
+        if end_time == 0 {
+            // No end time
+            assert_eq!(self.stake_paused, false, "Need to start stake first.");
+        } else {
+            assert_eq!(self.stake_paused, true, "Need to pause stake first.");
+        }
+        self.stake_end_time = end_time;
+        env::log_str(&format!(
+            "Stake end time updated to {}",
+            self.stake_end_time
+        ));
     }
 
     /// Unstake all principal and rewards
     #[payable]
-    pub fn unstake(&mut self) {
+    pub fn unstake(&mut self) -> Promise {
+        assert_one_yocto();
         let account_id = env::predecessor_account_id();
         let mut stake_info = self
             .staked_balances
@@ -49,8 +97,18 @@ impl StakingContract {
             .expect("No stake found for this account");
 
         // Calculate the time difference and accumulated rewards
-        let current_time = env::block_timestamp() / 1_000_000_000; // Convert nanoseconds to seconds
-        let staked_duration = current_time - stake_info.start_time;
+        let current_time = env::block_timestamp() / NANOSECONDS; // Convert nanoseconds to seconds
+        let reward_end_time = if self.stake_end_time == 0 {
+            current_time
+        } else {
+            std::cmp::min(current_time, self.stake_end_time)
+        };
+
+        let staked_duration = if reward_end_time >= stake_info.start_time {
+            reward_end_time - stake_info.start_time
+        } else {
+            0
+        };
 
         // Update accumulated rewards
         let reward = self.calculate_reward(stake_info.amount, staked_duration);
@@ -59,29 +117,63 @@ impl StakingContract {
         // Total payout = principal + accumulated rewards
         let total_payout = stake_info.amount + stake_info.accumulated_reward;
 
+        // Transfer principal and rewards to the user
+        Promise::new(self.token_contract.clone())
+            .function_call(
+                "ft_transfer".to_string(),
+                serde_json::json!({
+                    "receiver_id": account_id,
+                    "amount": total_payout.to_string(),
+                })
+                .to_string()
+                .into_bytes(),
+                NearToken::from_yoctonear(1), // Attach 1 yoctoNEAR
+                Gas::from_gas(20_000_000_000_000),
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_gas(5_000_000_000_000))
+                    .on_ft_transfer_then_remove(
+                        account_id,
+                        stake_info.amount,
+                        stake_info.accumulated_reward,
+                    ),
+            )
+    }
+
+    /// Callback: After ft_transfer, only then remove staking record.
+    #[private]
+    pub fn on_ft_transfer_then_remove(
+        &mut self,
+        account_id: AccountId,
+        stake_amount: u128,
+        reward_amount: u128,
+        #[callback_result] call_result: Result<(), near_sdk::PromiseError>,
+    ) -> bool {
+        assert!(call_result.is_ok(), "Unstake transfer failed");
         // Remove staking record
         self.staked_balances.remove(&account_id);
-
-        // Transfer principal and rewards to the user
-        near_sdk::Promise::new(account_id.clone()).function_call(
-            "ft_transfer".to_string(),
-            near_sdk::serde_json::json!({
-                "receiver_id": account_id,
-                "amount": total_payout.to_string(),
-            })
-            .to_string()
-            .into_bytes(),
-            NearToken::from_yoctonear(1), // Attach 1 yoctoNEAR
-            env::prepaid_gas().saturating_div(2),
-        );
+        self.total_staked -= stake_amount;
+        self.total_claimed_reward += reward_amount;
+        true
     }
 
     /// Query staking information for a specific user
     pub fn get_stake_info(&self, account_id: AccountId) -> Option<StakeInfo> {
         if let Some(mut stake_info) = self.staked_balances.get(&account_id) {
             // Calculate the time difference
-            let current_time = env::block_timestamp() / 1_000_000_000; // Convert nanoseconds to seconds
-            let staked_duration = current_time - stake_info.start_time;
+            let current_time = env::block_timestamp() / NANOSECONDS; // Convert nanoseconds to seconds
+            let reward_end_time = if self.stake_end_time == 0 {
+                current_time
+            } else {
+                std::cmp::min(current_time, self.stake_end_time)
+            };
+
+            let staked_duration = if reward_end_time >= stake_info.start_time {
+                reward_end_time - stake_info.start_time
+            } else {
+                0
+            };
 
             // Calculate real-time rewards
             let reward = self.calculate_reward(stake_info.amount, staked_duration);
@@ -99,8 +191,18 @@ impl StakingContract {
     /// Calculate rewards based on staking amount and duration
     fn calculate_reward(&self, amount: u128, duration_in_seconds: u64) -> u128 {
         // Reward formula: Principal * APY * duration / (SECONDS_IN_A_YEAR * 10000)
-        let reward = amount * APY * (duration_in_seconds as u128) / (SECONDS_IN_A_YEAR * 10000);
+        let reward = amount * APY * (duration_in_seconds as u128) / (SECONDS_IN_A_YEAR * APY_BASE);
         reward
+    }
+
+    /// Query total stake
+    fn get_total_stake(&self) -> u128 {
+        self.total_staked
+    }
+
+    /// Query total claimed reward
+    fn get_total_claimed_reward(&self) -> u128 {
+        self.total_claimed_reward
     }
 }
 
@@ -112,7 +214,7 @@ impl FungibleTokenReceiver for StakingContract {
         &mut self,
         sender_id: AccountId,
         amount: U128,
-        _msg: String,
+        msg: String,
     ) -> PromiseOrValue<U128> {
         // Ensure that the token being transferred is the one specified in the contract
         assert_eq!(
@@ -121,8 +223,10 @@ impl FungibleTokenReceiver for StakingContract {
             "Only the specified token can be staked"
         );
 
+        assert_eq!(self.stake_paused, false, "Stake paused");
+
         // Get the current timestamp
-        let current_time = env::block_timestamp() / 1_000_000_000; // Convert nanoseconds to seconds
+        let current_time = env::block_timestamp() / NANOSECONDS; // Convert nanoseconds to seconds
 
         // Update or create the user's staking record
         let mut stake_info = self.staked_balances.get(&sender_id).unwrap_or(StakeInfo {
@@ -142,6 +246,7 @@ impl FungibleTokenReceiver for StakingContract {
 
         self.staked_balances.insert(&sender_id, &stake_info);
 
+        self.total_staked += amount.0;
         // Return 0 to indicate the transfer was successfully handled
         PromiseOrValue::Value(U128(0))
     }
@@ -152,7 +257,7 @@ mod tests {
     use super::*;
     use near_sdk::json_types::U128;
     use near_sdk::test_utils::accounts;
-    use near_sdk::{test_utils::VMContextBuilder, testing_env, AccountId, MockedBlockchain};
+    use near_sdk::{test_utils::VMContextBuilder, testing_env, AccountId};
 
     const TOKEN_CONTRACT: &str = "token.testnet";
 
@@ -279,14 +384,18 @@ mod tests {
 
         // Simulate time passing (1 year)
         let new_timestamp = initial_timestamp + 365 * 24 * 60 * 60 * 1_000_000_000; // Add 1 year in nanoseconds
-        let context = get_context(accounts(1), 0, new_timestamp);
+        let context = get_context(accounts(1), 1, new_timestamp);
         testing_env!(context.build());
 
+        let mut stake_info = contract.get_stake_info(sender_id.clone());
         // Unstake all tokens
         contract.unstake();
-
+        let stake = stake_info.unwrap();
+        contract.on_ft_transfer_then_remove(accounts(1), stake.amount, stake.accumulated_reward, Ok(()));
         // Check that the user's staking record is removed
-        let stake_info = contract.get_stake_info(sender_id);
+        stake_info = contract.get_stake_info(sender_id);
         assert!(stake_info.is_none());
+        assert_eq!(contract.get_total_stake(), 0);
+        assert_eq!(contract.get_total_claimed_reward(), stake.accumulated_reward);
     }
 }

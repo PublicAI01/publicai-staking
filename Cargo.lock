@@ -2443,6 +2443,7 @@ dependencies = [
 name = "publicai-staking"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "borsh 0.10.4",
  "near-contract-standards",
  "near-sdk",
