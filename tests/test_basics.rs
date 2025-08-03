@@ -46,7 +46,7 @@ async fn test_unstake_cross_contract_failure() -> Result<()> {
 
     let _ = root_account
         .call(staking_contract.id(), "new")
-        .args_json((root_account.id(), token_contract.id()))
+        .args_json((root_account.id(), token_contract.id(), U128(1_000_000u128)))
         .transact()
         .await?
         .into_result()?; // Unwrap to catch init failure

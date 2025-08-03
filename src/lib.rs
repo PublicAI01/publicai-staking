@@ -8,7 +8,6 @@ use near_sdk::{
 // Constants
 const APY: u128 = 800; // Annual Percentage Yield (8%)
 const SECONDS_IN_A_YEAR: u128 = 365 * 24 * 60 * 60; // Number of seconds in a year
-const ONE_MONTH: u128 = 30 * 60 * 60; // Number of seconds in a month
 const NANOSECONDS: u64 = 1_000_000_000; // Nanoseconds to seconds
 const APY_BASE: u128 = 10000;
 
@@ -31,14 +30,17 @@ pub struct StakingContract {
     stake_end_time: u64, // Stake end time,after this time, there will be no rewards for stake,0 means no end time.
     total_staked: u128,  // Total amount staked
     total_claimed_reward: u128, // Total amount of claimed reward
+    total_reward: u128,  // Total amount of reward
 }
 
 #[near]
 impl StakingContract {
     /// Initialize the contract
     #[init]
-    pub fn new(owner_id: AccountId, token_contract: AccountId) -> Self {
+    pub fn new(owner_id: AccountId, token_contract: AccountId, total_reward: U128) -> Self {
         assert!(!env::state_exists(), "Already initialized");
+        let reward = total_reward.0;
+        assert!(reward > 0, "Total reward should gt 0");
         Self {
             owner_id,
             token_contract,
@@ -47,6 +49,7 @@ impl StakingContract {
             stake_end_time: 0,
             total_staked: 0,
             total_claimed_reward: 0,
+            total_reward: reward,
         }
     }
 
@@ -87,6 +90,22 @@ impl StakingContract {
         ));
     }
 
+    /// Set total reward (only callable by the owner).
+    /// - `total_reward`: Total reward.
+    #[payable]
+    pub fn set_total_reward(&mut self, total_reward: U128) {
+        assert_one_yocto();
+        assert_eq!(
+            self.owner_id,
+            env::predecessor_account_id(),
+            "Only the owner can set total reward."
+        );
+        let reward = total_reward.0;
+        assert!(reward > 0, "Total reward should gt 0.");
+        self.total_reward = reward;
+        env::log_str(&format!("Total reward updated to {}", self.total_reward));
+    }
+
     /// Unstake all principal and rewards
     #[payable]
     pub fn unstake(&mut self) -> Promise {
@@ -113,7 +132,17 @@ impl StakingContract {
 
         // Update accumulated rewards
         let reward = self.calculate_reward(stake_info.amount, staked_duration);
-        stake_info.accumulated_reward += reward;
+        let after_total_claimed_reward = self.total_claimed_reward + reward;
+        let mut claim_reward = 0;
+        // The user can only claim the portion that does not exceed the total reward.
+        if after_total_claimed_reward >= self.total_reward {
+            if self.total_reward >= self.total_claimed_reward {
+                claim_reward = self.total_reward - self.total_claimed_reward;
+            }
+        } else {
+            claim_reward = reward;
+        }
+        stake_info.accumulated_reward += claim_reward;
 
         // Total payout = principal + accumulated rewards
         let total_payout = stake_info.amount + stake_info.accumulated_reward;
@@ -252,7 +281,11 @@ impl StakingContract {
             _ => env::panic_str("Failed to get token balance"),
         };
         let mut available = 0;
-        let frozen = self.total_staked + self.calculate_reward(self.total_staked, ONE_MONTH as u64); // Assume that it is impossible to transfer all staking users’ income for one month
+        let mut frozen = self.total_staked;
+        if self.total_reward >= self.total_claimed_reward {
+            frozen += self.total_reward - self.total_claimed_reward;
+        }
+
         if balance > frozen {
             available = balance - frozen;
         }
@@ -352,7 +385,8 @@ mod tests {
 
         // Initialize the contract
         let token_contract: AccountId = TOKEN_CONTRACT.parse().unwrap();
-        let contract = StakingContract::new(accounts(0), token_contract.clone());
+        let contract =
+            StakingContract::new(accounts(0), token_contract.clone(), U128(1_000_000u128));
 
         // Check initialization
         assert_eq!(contract.owner_id, accounts(0));
@@ -366,7 +400,11 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract = StakingContract::new(
+            accounts(0),
+            TOKEN_CONTRACT.parse().unwrap(),
+            U128(1_000_000u128),
+        );
 
         // Simulate a user staking tokens via ft_on_transfer
         let sender_id = accounts(1);
@@ -387,7 +425,11 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract = StakingContract::new(
+            accounts(0),
+            TOKEN_CONTRACT.parse().unwrap(),
+            U128(1_000_000u128),
+        );
 
         // Simulate a user staking tokens multiple times
         let sender_id = accounts(1);
@@ -414,7 +456,11 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract = StakingContract::new(
+            accounts(0),
+            TOKEN_CONTRACT.parse().unwrap(),
+            U128(1_000_000u128),
+        );
 
         // Simulate a user staking tokens
         let sender_id = accounts(1);
@@ -444,7 +490,11 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract = StakingContract::new(
+            accounts(0),
+            TOKEN_CONTRACT.parse().unwrap(),
+            U128(1_000_000u128),
+        );
 
         // Simulate a user staking tokens
         let sender_id = accounts(1);
