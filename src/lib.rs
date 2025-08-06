@@ -246,6 +246,8 @@ impl StakingContract {
             "Only the owner can withdraw tokens"
         );
 
+        assert_eq!(self.stake_paused, true, "Stake should paused");
+
         Promise::new(self.token_contract.clone())
             .function_call(
                 "ft_balance_of".to_string(),
