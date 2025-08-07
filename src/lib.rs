@@ -2,7 +2,8 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::collections::UnorderedMap;
 use near_sdk::json_types::U128;
 use near_sdk::{
-    assert_one_yocto, env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
+    assert_one_yocto, env, log, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise,
+    PromiseOrValue,
 };
 
 // Constants
@@ -67,6 +68,18 @@ impl StakingContract {
         env::log_str(&format!("Stake paused updated to {}", self.stake_paused));
     }
 
+    #[payable]
+    pub fn update_owner(&mut self, new_owner: AccountId) -> bool {
+        assert_one_yocto();
+        require!(
+            env::predecessor_account_id() == self.owner_id,
+            "Owner's method"
+        );
+        require!(!new_owner.as_str().is_empty(), "New owner cannot be empty");
+        log!("Owner updated from {} to {}", self.owner_id, new_owner);
+        self.owner_id = new_owner;
+        true
+    }
     /// Set stake end time (only callable by the owner).
     /// - `end_time`: End time timestamp.
     #[payable]
@@ -142,10 +155,14 @@ impl StakingContract {
         } else {
             claim_reward = reward;
         }
+        let before_accumulated_reward = stake_info.accumulated_reward;
         stake_info.accumulated_reward += claim_reward;
 
         // Total payout = principal + accumulated rewards
         let total_payout = stake_info.amount + stake_info.accumulated_reward;
+
+        // Remove staking record
+        self.staked_balances.remove(&account_id);
 
         // Transfer principal and rewards to the user
         Promise::new(self.token_contract.clone())
@@ -167,6 +184,8 @@ impl StakingContract {
                         account_id,
                         stake_info.amount,
                         stake_info.accumulated_reward,
+                        stake_info.start_time,
+                        before_accumulated_reward,
                     ),
             )
     }
@@ -178,14 +197,26 @@ impl StakingContract {
         account_id: AccountId,
         stake_amount: u128,
         reward_amount: u128,
+        start_time: u64,
+        before_reward_amount: u128,
         #[callback_result] call_result: Result<(), near_sdk::PromiseError>,
     ) -> bool {
-        assert!(call_result.is_ok(), "Unstake transfer failed");
-        // Remove staking record
-        self.staked_balances.remove(&account_id);
-        self.total_staked -= stake_amount;
-        self.total_claimed_reward += reward_amount;
-        true
+        match call_result {
+            Ok(()) => {
+                self.total_staked -= stake_amount;
+                self.total_claimed_reward += reward_amount;
+                true
+            }
+            Err(_) => {
+                let stake_info = StakeInfo {
+                    amount: stake_amount,
+                    accumulated_reward: before_reward_amount,
+                    start_time,
+                };
+                self.staked_balances.insert(&account_id, &stake_info);
+                false
+            }
+        }
     }
 
     /// Query staking information for a specific user
@@ -515,6 +546,8 @@ mod tests {
         contract.on_ft_transfer_then_remove(
             accounts(1),
             stake.amount,
+            stake.accumulated_reward,
+            stake.start_time,
             stake.accumulated_reward,
             Ok(()),
         );
