@@ -22,7 +22,7 @@ This is a NEAR staking smart contract that allows users to stake NEP-141 tokens 
 
 ### Constants
 
-- **APY**: `8.0%` (represented as `800` with a precision factor of `10000`).
+- **AAR**: `8.0%` (represented as `800` with a precision factor of `10000`).
 - **SECONDS_IN_A_YEAR**: `31,536,000` seconds (365 days).
 
 ---
