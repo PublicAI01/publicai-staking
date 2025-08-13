@@ -15,6 +15,8 @@ const SECONDS_IN_A_YEAR: u128 = 365 * 24 * 60 * 60; // Number of seconds in a ye
 const WEEK: u64 = 7 * 24 * 60 * 60; // Number of seconds in a week
 const NANOSECONDS: u64 = 1_000_000_000; // Nanoseconds to seconds
 const AAR_BASE: u128 = 10000;
+const MAX_TOTAL_REWARD: u128 = 100000000_000_000_000_000_000_000;
+const MAX_LOCK_DURATION: u64 = 4 * WEEK;
 const AAR_EARLY: [u128; 5] = [50000, 40000, 30000, 20000, 10000]; // Week 1,2,3,4,5 AAR
 /// Struct for storing staking information
 #[near(serializers = [json, borsh])]
@@ -96,6 +98,10 @@ impl StakingContract {
             env::predecessor_account_id(),
             "Only the owner can set lock duration."
         );
+        require!(
+            lock_duration <= MAX_LOCK_DURATION,
+            "Cannot exceed MAX_LOCK_DURATION"
+        );
         self.lock_duration = lock_duration;
         env::log_str(&format!("Lock duration updated to {}", self.lock_duration));
     }
@@ -147,6 +153,10 @@ impl StakingContract {
         );
         let reward = total_reward.0;
         assert!(reward > 0, "Total reward should gt 0.");
+        assert!(
+            reward <= MAX_TOTAL_REWARD,
+            "Total reward should le MAX_TOTAL_REWARD"
+        );
         self.total_reward = reward;
         env::log_str(&format!("Total reward updated to {}", self.total_reward));
     }
@@ -204,11 +214,13 @@ impl StakingContract {
         let before_accumulated_reward = stake_info.accumulated_reward;
         stake_info.accumulated_reward += claim_reward;
 
+        let mut reward_amount = stake_info.accumulated_reward;
         // Total payout = principal + accumulated rewards
         // If the lock-up period is not exceeded, only the principal will be returned.
         let total_payout = if current_time > stake_info.first_stake_time + self.lock_duration {
             stake_info.amount + stake_info.accumulated_reward
         } else {
+            reward_amount = 0;
             stake_info.amount
         };
 
@@ -234,7 +246,7 @@ impl StakingContract {
                     .on_ft_transfer_then_remove(
                         account_id,
                         stake_info.amount,
-                        stake_info.accumulated_reward,
+                        reward_amount,
                         stake_info.first_stake_time,
                         stake_info.start_time,
                         before_accumulated_reward,
