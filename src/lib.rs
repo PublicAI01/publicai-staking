@@ -17,7 +17,7 @@ const NANOSECONDS: u64 = 1_000_000_000; // Nanoseconds to seconds
 const AAR_BASE: u128 = 10000;
 const MAX_TOTAL_REWARD: u128 = 100000000_000_000_000_000_000_000;
 const MAX_LOCK_DURATION: u64 = 4 * WEEK;
-const AAR_EARLY: [u128; 5] = [40000, 20000, 10000, 5000, 5000]; // Week 1,2,3,4,5 AAR
+const AAR_EARLY: [u128; 5] = [50000, 50000, 10000, 5000, 5000]; // Week 1,2,3,4,5 AAR
 /// Struct for storing staking information
 #[near(serializers = [json, borsh])]
 pub struct StakeInfo {
