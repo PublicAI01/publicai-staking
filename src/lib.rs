@@ -487,6 +487,11 @@ impl StakingContract {
     pub fn get_aar(&self) -> [u128; 5] {
         AAR_EARLY
     }
+
+    /// Query lock duration
+    pub fn get_lock_duration(&self) -> u64 {
+        self.lock_duration
+    }
 }
 
 /// Implementation of NEP-141 `ft_on_transfer` method
