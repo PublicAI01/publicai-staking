@@ -492,6 +492,20 @@ impl StakingContract {
     pub fn get_lock_duration(&self) -> u64 {
         self.lock_duration
     }
+
+    pub fn search_stake_infos(
+        &self,
+        offset: Option<u64>,
+        limit: Option<u64>,
+    ) -> Vec<(AccountId, StakeInfo)> {
+        let start = offset.unwrap_or(0);
+        let l = limit.unwrap_or(50);
+        self.staked_balances
+            .iter()
+            .skip(start as usize)
+            .take(l as usize)
+            .collect()
+    }
 }
 
 /// Implementation of NEP-141 `ft_on_transfer` method
